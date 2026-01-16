@@ -1,17 +1,17 @@
 import os
 import re
 import time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 # ----------------------------
 # Config
 # ----------------------------
-API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")  # optional (but your code expects it)
+API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")  # optional, but needed for Google data
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # required
 TIMEOUT = 18
 
@@ -29,7 +29,10 @@ CTA_PATTERNS = [
 PHONE_REGEX = re.compile(r"(\+?1?\s*)?(\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4})")
 URL_REGEX = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
 
-CANDIDATE_PATHS = ["", "specials", "offers", "deals", "coupons", "promotions", "financing", "warranty", "about", "services", "service", "contact"]
+CANDIDATE_PATHS = [
+    "", "specials", "offers", "deals", "coupons", "promotions",
+    "financing", "warranty", "about", "services", "service", "contact"
+]
 
 OFFER_PATTERNS = [
     r"\b\d{1,2}%\s*off\b", r"\bdiscount\b", r"\bcoupon\b", r"\bpromo\b", r"\bpromotion\b",
@@ -37,25 +40,28 @@ OFFER_PATTERNS = [
     r"\bno money down\b", r"\bstarting at\b", r"\b\$\s*\d+\b",
     r"\b0%\b", r"\bapr\b", r"\binterest\b", r"\bwarranty\b"
 ]
-FINANCING_PATTERNS = [r"\bfinancing\b", r"\bmonthly payments\b", r"\b0% interest\b", r"\bno interest\b", r"\bdeferred\b", r"\bpre-qualify\b", r"\bcredit\b"]
+FINANCING_PATTERNS = [
+    r"\bfinancing\b", r"\bmonthly payments\b", r"\b0% interest\b", r"\bno interest\b",
+    r"\bdeferred\b", r"\bpre-qualify\b", r"\bcredit\b"
+]
 WARRANTY_PATTERNS = [r"\bwarranty\b", r"\blifetime\b", r"\bguarantee\b", r"\bworkmanship\b"]
 SPANISH_PATTERNS = [r"\bse habla espa(n|ñ)ol\b", r"\bhablamos espa(n|ñ)ol\b", r"\bespa(n|ñ)ol\b"]
 INSURED_PATTERNS = [r"\binsured\b", r"\bfully insured\b", r"\bliability insured\b"]
 BONDED_PATTERNS = [r"\bbonded\b", r"\blicensed and bonded\b"]
 VIRTUAL_PATTERNS = [r"\bvirtual\b", r"\bvideo consultation\b", r"\bvirtual estimate\b", r"\bremote\b"]
-MEMBERSHIP_PATTERNS = [r"\bbb\b", r"\bangi\b", r"\bhomeadvisor\b", r"\bnari\b", r"\bnahb\b", r"\bnate\b", r"\bchamber of commerce\b"]
-CERT_PATTERNS = [r"\bcertified\b", r"\blicensed\b", r"\bepa\b", r"\bnate\b"]
-AWARD_PATTERNS = [r"\baward\b", r"\bbest of\b", r"\btop rated\b", r"\bwinner\b"]
-COMMUNITY_PATTERNS = [r"\bcommunity\b", r"\bdonate\b", r"\bsponsor\b", r"\bcharity\b", r"\bvolunteer\b"]
 
 app = FastAPI()
 session = requests.Session()
 
 # ----------------------------
-# Helpers (adapted from your script)
+# Helpers
 # ----------------------------
 def clean_str(x) -> str:
     return "" if x is None else str(x).strip()
+
+def safe_slice(val, n: int) -> str:
+    """Always return a string, never None, and safely slice."""
+    return clean_str(val)[:n]
 
 def normalize_phone(phone: str) -> str:
     digits = re.sub(r"\D+", "", clean_str(phone))
@@ -75,12 +81,16 @@ def normalize_url(url: str) -> str:
 
 def http_get(url: str, timeout: int = TIMEOUT):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+        )
     }
     return session.get(url, headers=headers, timeout=timeout, allow_redirects=True)
 
 def extract_visible_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
+    # Use html.parser to avoid lxml build issues
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
     text = soup.get_text(separator=" ")
@@ -104,8 +114,10 @@ def strip_contact_and_cta(text: str) -> str:
         return ""
     t = URL_REGEX.sub("", t)
     t = PHONE_REGEX.sub("", t)
+
     for pat in CTA_PATTERNS:
         t = re.sub(pat, "", t, flags=re.IGNORECASE)
+
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"[\|\•]+", " ", t).strip()
     return t
@@ -114,6 +126,7 @@ def compress_to_offer(text: str) -> str:
     t = strip_contact_and_cta(text)
     if not t:
         return ""
+
     patterns = [
         r"(\b\d{1,2}%\s*off\b)",
         r"(\b\$?\s*\d+\s*(?:off|discount)\b)",
@@ -133,11 +146,10 @@ def compress_to_offer(text: str) -> str:
             t = m.group(1)
 
     t = re.sub(r"\s+", " ", t).strip()
+
     if len(t) > MAX_OFFER_LEN:
         t = t[:MAX_OFFER_LEN].rstrip()
         t = re.sub(r"\s+\S*$", "", t).strip()
-        if not t:
-            t = strip_contact_and_cta(text)[:MAX_OFFER_LEN].strip()
 
     if URL_REGEX.search(t) or PHONE_REGEX.search(t):
         return ""
@@ -156,7 +168,7 @@ def find_sentences(text: str, patterns: list[str], max_items: int = 3) -> list[s
         if any(r.search(s) for r in rx):
             s = strip_contact_and_cta(s)
             if s:
-                hits.append(s[:240])
+                hits.append(safe_slice(s, 240))
         if len(hits) >= max_items:
             break
     return hits
@@ -180,14 +192,16 @@ def scrape_site_bundle(website: str) -> dict:
             resp = http_get(url, timeout=TIMEOUT)
             if resp.status_code >= 400:
                 continue
+
             html = resp.text
-            soup = BeautifulSoup(html, "lxml")
+            soup = BeautifulSoup(html, "html.parser")
+
             if not meta_description:
                 meta_description = get_meta(soup, name="description")
             if not og_description:
                 og_description = get_meta(soup, prop="og:description")
             if not title and soup.title and soup.title.get_text():
-                title = soup.title.get_text().strip()[:120]
+                title = safe_slice(soup.title.get_text(), 120)
 
             text = extract_visible_text(html)
             if len(text) < 200:
@@ -229,17 +243,20 @@ def scrape_site_bundle(website: str) -> dict:
             break
 
     highlights_tagline = strip_contact_and_cta(title) if title else strip_contact_and_cta(meta_description or og_description)
-    highlights_tagline = highlights_tagline[:140] if highlights_tagline else ""
+    highlights_tagline = safe_slice(highlights_tagline, 140)
 
-    financing_options = "; ".join([strip_contact_and_cta(x) for x in financing_raw[:2] if strip_contact_and_cta(x)])[:500]
-    warranty_text = "; ".join([strip_contact_and_cta(x) for x in warranty_raw[:2] if strip_contact_and_cta(x)])[:500]
+    financing_options = "; ".join([strip_contact_and_cta(x) for x in financing_raw[:2] if strip_contact_and_cta(x)])
+    financing_options = safe_slice(financing_options, 500)
+
+    warranty_text = "; ".join([strip_contact_and_cta(x) for x in warranty_raw[:2] if strip_contact_and_cta(x)])
+    warranty_text = safe_slice(warranty_text, 500)
 
     return {
         "status": "ok",
         "pagesChecked": pages_checked,
-        "metaDescription": strip_contact_and_cta(meta_description)[:300] if meta_description else "",
-        "ogDescription": strip_contact_and_cta(og_description)[:300] if og_description else "",
-        "title": strip_contact_and_cta(title) if title else "",
+        "metaDescription": safe_slice(strip_contact_and_cta(meta_description), 300),
+        "ogDescription": safe_slice(strip_contact_and_cta(og_description), 300),
+        "title": strip_contact_and_cta(title),
         "offers": offers[:3],
         "financingOptions": financing_options,
         "warrantyText": warranty_text,
@@ -252,7 +269,7 @@ def scrape_site_bundle(website: str) -> dict:
     }
 
 # ----------------------------
-# Google Places (same API endpoints you used)
+# Google Places
 # ----------------------------
 def places_text_search(query: str) -> str | None:
     if not API_KEY:
@@ -271,8 +288,9 @@ def places_details(place_id: str) -> dict:
         return {}
     url = "https://maps.googleapis.com/maps/api/place/details/json"
     fields = ",".join([
-        "name","formatted_address","formatted_phone_number","website","rating","user_ratings_total",
-        "reviews","opening_hours","editorial_summary","business_status","url"
+        "name", "formatted_address", "formatted_phone_number", "website", "rating",
+        "user_ratings_total", "reviews", "opening_hours", "editorial_summary",
+        "business_status", "url"
     ])
     r = session.get(url, params={"place_id": place_id, "fields": fields, "key": API_KEY}, timeout=TIMEOUT)
     r.raise_for_status()
@@ -294,7 +312,8 @@ def format_top_reviews(reviews: list[dict], top_n: int = 5) -> str:
         if not text:
             continue
         text = strip_contact_and_cta(text)
-        text = re.sub(r"\s+", " ", text)[:300]
+        text = re.sub(r"\s+", " ", text)
+        text = safe_slice(text, 300)
         out.append(f"{author} ({rating}★): {text}")
     return "\n".join(out)
 
@@ -321,7 +340,7 @@ async def gravityforms_webhook(
     payload: GravityPayload,
     x_webhook_secret: str | None = Header(default=None),
 ):
-    # Basic auth guard
+    # Auth guard
     if not WEBHOOK_SECRET:
         raise HTTPException(status_code=500, detail="WEBHOOK_SECRET not set")
     if x_webhook_secret != WEBHOOK_SECRET:
@@ -331,7 +350,6 @@ async def gravityforms_webhook(
     website = normalize_url(payload.website or "")
     phone = normalize_phone(payload.phone or "")
 
-    # Build a query for Places
     query_parts = [company]
     if phone:
         query_parts.append(phone)
@@ -354,13 +372,17 @@ async def gravityforms_webhook(
             time.sleep(GOOGLE_SLEEP)
 
             if details:
+                weekday_text = (details.get("opening_hours", {}) or {}).get("weekday_text", []) or []
+                hours = " | ".join([clean_str(x) for x in weekday_text if clean_str(x)])
+                hours = safe_slice(strip_contact_and_cta(hours), 500)
+
                 enriched["google"] = {
                     "rating": details.get("rating"),
                     "reviewCount": details.get("user_ratings_total"),
                     "website": details.get("website"),
                     "top5GoogleReviews": format_top_reviews(details.get("reviews", []), 5),
-                    "businessHours": " | ".join((details.get("opening_hours", {}) or {}).get("weekday_text", []) or [])[:500],
-                    "description": (details.get("editorial_summary", {}) or {}).get("overview", ""),
+                    "businessHours": hours,
+                    "description": strip_contact_and_cta((details.get("editorial_summary", {}) or {}).get("overview", "")),
                     "mapsUrl": details.get("url"),
                 }
         except Exception as e:
@@ -373,35 +395,49 @@ async def gravityforms_webhook(
         except Exception as e:
             enriched["site"] = {"status": "error", "error": str(e)}
 
-    # Build final outputs (your fields)
     g = enriched.get("google") or {}
     s = enriched.get("site") or {}
     offers = (s.get("offers") or []) if isinstance(s, dict) else []
+    highlights = (s.get("highlights") or []) if isinstance(s, dict) else []
+
+    description = ""
+    if isinstance(s, dict):
+        description = (
+            g.get("description")
+            or s.get("metaDescription")
+            or s.get("ogDescription")
+            or ""
+        )
+    description = safe_slice(strip_contact_and_cta(description), 500)
 
     enriched["output"] = {
-        "companyWebsite": g.get("website") or website,
-        "averageGoogleReviewRating": g.get("rating") or "",
-        "numberOfGoogleReviews": g.get("reviewCount") or "",
-        "top5GoogleReviews": g.get("top5GoogleReviews") or "",
-        "businessHours": strip_contact_and_cta(g.get("businessHours") or "")[:500],
-        "description": strip_contact_and_cta((g.get("description") or (s.get("metaDescription") or "") or (s.get("ogDescription") or "") or ""))[:500] if isinstance(s, dict) else "",
+        "companyWebsite": clean_str(g.get("website") or website),
+        "averageGoogleReviewRating": clean_str(g.get("rating") or ""),
+        "numberOfGoogleReviews": clean_str(g.get("reviewCount") or ""),
+        "top5GoogleReviews": clean_str(g.get("top5GoogleReviews") or ""),
+        "businessHours": safe_slice(strip_contact_and_cta(g.get("businessHours") or ""), 500),
+
+        "description": description,
+
         "specialOffer1": offers[0] if len(offers) > 0 else "",
         "specialOffer2": offers[1] if len(offers) > 1 else "",
         "specialOffer3": offers[2] if len(offers) > 2 else "",
-        "offersFinancing": "yes" if (s.get("financingOptions") if isinstance(s, dict) else "") else "no",
-        "financingOptions": ((s.get("financingOptions") or "") if isinstance(s, dict) else "")[:500],
-        "waranty": ((s.get("warrantyText") or "") if isinstance(s, dict) else "")[:500],
-        "highlightsTagline": ((s.get("highlightsTagline") or "") if isinstance(s, dict) else "")[:140],
+
+        "offersFinancing": "yes" if (clean_str(s.get("financingOptions")) if isinstance(s, dict) else "") else "no",
+        "financingOptions": safe_slice((s.get("financingOptions") if isinstance(s, dict) else ""), 500),
+
+        "waranty": safe_slice((s.get("warrantyText") if isinstance(s, dict) else ""), 500),
+
+        "communicatesInSpanish": "yes" if (s.get("spanish") if isinstance(s, dict) else False) else "no",
         "isInsured": "yes" if (s.get("insured") if isinstance(s, dict) else False) else "no",
         "isBonded": "yes" if (s.get("bonded") if isinstance(s, dict) else False) else "no",
         "offersVirtualPresentations": "yes" if (s.get("virtual") if isinstance(s, dict) else False) else "no",
-        "highlightPoint1": (s.get("highlights") or ["","",""])[0] if isinstance(s, dict) and (s.get("highlights") or []) else "",
-        "highlightPoint2": (s.get("highlights") or ["","",""])[1] if isinstance(s, dict) and len(s.get("highlights") or []) > 1 else "",
-        "highlightPoint3": (s.get("highlights") or ["","",""])[2] if isinstance(s, dict) and len(s.get("highlights") or []) > 2 else "",
-        "highlightsTagline": (s.get("highlightsTagline") if isinstance(s, dict) else "")[:140],
+
+        "highlightPoint1": highlights[0] if len(highlights) > 0 else "",
+        "highlightPoint2": highlights[1] if len(highlights) > 1 else "",
+        "highlightPoint3": highlights[2] if len(highlights) > 2 else "",
+
+        "highlightsTagline": safe_slice((s.get("highlightsTagline") if isinstance(s, dict) else ""), 140),
     }
 
-    # For now: return enriched JSON so you can see it works.
-    # Later: write to Sheets/Airtable/DB here.
     return enriched
-
