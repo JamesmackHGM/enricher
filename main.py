@@ -384,14 +384,14 @@ async def gravityforms_webhook(
         "numberOfGoogleReviews": g.get("reviewCount") or "",
         "top5GoogleReviews": g.get("top5GoogleReviews") or "",
         "businessHours": strip_contact_and_cta(g.get("businessHours") or "")[:500],
-        "description": strip_contact_and_cta(g.get("description") or s.get("metaDescription") or s.get("ogDescription") or "")[:500] if isinstance(s, dict) else "",
+        "description": strip_contact_and_cta((g.get("description") or (s.get("metaDescription") or "") or (s.get("ogDescription") or "") or ""))[:500] if isinstance(s, dict) else "",
         "specialOffer1": offers[0] if len(offers) > 0 else "",
         "specialOffer2": offers[1] if len(offers) > 1 else "",
         "specialOffer3": offers[2] if len(offers) > 2 else "",
         "offersFinancing": "yes" if (s.get("financingOptions") if isinstance(s, dict) else "") else "no",
-        "financingOptions": (s.get("financingOptions") if isinstance(s, dict) else "")[:500],
-        "waranty": (s.get("warrantyText") if isinstance(s, dict) else "")[:500],
-        "communicatesInSpanish": "yes" if (s.get("spanish") if isinstance(s, dict) else False) else "no",
+        "financingOptions": ((s.get("financingOptions") or "") if isinstance(s, dict) else "")[:500],
+        "waranty": ((s.get("warrantyText") or "") if isinstance(s, dict) else "")[:500],
+        "highlightsTagline": ((s.get("highlightsTagline") or "") if isinstance(s, dict) else "")[:140],
         "isInsured": "yes" if (s.get("insured") if isinstance(s, dict) else False) else "no",
         "isBonded": "yes" if (s.get("bonded") if isinstance(s, dict) else False) else "no",
         "offersVirtualPresentations": "yes" if (s.get("virtual") if isinstance(s, dict) else False) else "no",
@@ -404,3 +404,4 @@ async def gravityforms_webhook(
     # For now: return enriched JSON so you can see it works.
     # Later: write to Sheets/Airtable/DB here.
     return enriched
+
