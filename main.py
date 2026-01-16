@@ -9,10 +9,10 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 # ----------------------------
-# Config
+# Config (reads from Render env vars)
 # ----------------------------
-API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")  # optional, but needed for Google data
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # required
+API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")  # <-- must match Render key name exactly
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 TIMEOUT = 18
 
 GOOGLE_SLEEP = 0.20
@@ -114,10 +114,8 @@ def strip_contact_and_cta(text: str) -> str:
         return ""
     t = URL_REGEX.sub("", t)
     t = PHONE_REGEX.sub("", t)
-
     for pat in CTA_PATTERNS:
         t = re.sub(pat, "", t, flags=re.IGNORECASE)
-
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"[\|\•]+", " ", t).strip()
     return t
@@ -350,7 +348,11 @@ async def gravityforms_webhook(
     website = normalize_url(payload.website or "")
     phone = normalize_phone(payload.phone or "")
 
+    # Build a better Places query to improve match accuracy (company + domain + phone)
+    domain = website.replace("https://", "").replace("http://", "").replace("www.", "").strip("/") if website else ""
     query_parts = [company]
+    if domain:
+        query_parts.append(domain)
     if phone:
         query_parts.append(phone)
     query = " ".join([p for p in query_parts if p]).strip()
@@ -361,11 +363,20 @@ async def gravityforms_webhook(
         "google": {},
         "site": {},
         "output": {},
+        # ---- DEBUG BLOCK (temporary, helps confirm Render env vars are applied) ----
+        "debug": {
+            "has_google_key": bool(API_KEY),
+            "google_key_len": len(API_KEY) if API_KEY else 0,
+            "places_query": query
+        }
+        # -------------------------------------------------------------------------
     }
 
     # Google enrichment
     if company and API_KEY:
         try:
+            enriched["google"] = {"status": "attempting_google"}  # so you can see it entered this block
+
             place_id = places_text_search(query)
             time.sleep(GOOGLE_SLEEP)
             details = places_details(place_id) if place_id else {}
@@ -384,7 +395,10 @@ async def gravityforms_webhook(
                     "businessHours": hours,
                     "description": strip_contact_and_cta((details.get("editorial_summary", {}) or {}).get("overview", "")),
                     "mapsUrl": details.get("url"),
+                    "placeId": place_id,
                 }
+            else:
+                enriched["google"] = {"status": "no_details_returned", "placeId": place_id}
         except Exception as e:
             enriched["google"] = {"error": str(e)}
 
@@ -402,18 +416,16 @@ async def gravityforms_webhook(
 
     description = ""
     if isinstance(s, dict):
-        description = (
-            g.get("description")
-            or s.get("metaDescription")
-            or s.get("ogDescription")
-            or ""
-        )
+        description = g.get("description") or s.get("metaDescription") or s.get("ogDescription") or ""
     description = safe_slice(strip_contact_and_cta(description), 500)
 
     enriched["output"] = {
         "companyWebsite": clean_str(g.get("website") or website),
+
+        # These are the two you care about
         "averageGoogleReviewRating": clean_str(g.get("rating") or ""),
         "numberOfGoogleReviews": clean_str(g.get("reviewCount") or ""),
+
         "top5GoogleReviews": clean_str(g.get("top5GoogleReviews") or ""),
         "businessHours": safe_slice(strip_contact_and_cta(g.get("businessHours") or ""), 500),
 
